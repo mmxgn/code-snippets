@@ -1,0 +1,284 @@
+* Pytorch Code Snippets
+
+Most of them are taken from PyTorchNLP book
+
+** Histogram 
+
+#+BEGIN_SRC python
+
+# Imports
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def plot_histogram(data_as_defaultdict):
+    """
+    Args:
+    data_as_defaultdict (dict) : mapping from word to counts (integer)
+    """
+    labels = np.array([key for key in data_as_defaultdict])
+    counts = np.zeros((len(labels), ))
+    
+    for n, key in enumerate(data_as_defaultdict):
+        counts[n] = len(data_as_defaultdict[key])
+        
+    argsorted = np.argsort(counts)
+    
+    labels = labels[argsorted[::-1]]
+    counts = counts[argsorted[::-1]]
+         
+    plt.figure(figsize=(21,11))
+    sns.barplot(x=labels, y=counts, )
+    plt.xlabel('key')
+    plt.ylabel('counts')
+#+END_SRC
+
+** Dataset 
+
+While not required, Pytorch provides the ==Dataset== class. 
+
+#+BEGIN_SRC python
+
+from torch.utils.data import Dataset
+
+class MyDataset(Dataset):
+    """Snippet for PyTorch daaset
+
+    """
+    def __init__(self, dataset_filename: str) -> None:
+        """
+        Args:
+            dataset_filename (str): filename for dataset 
+        
+        Description:
+            The goal here is to load somehow the dataset you
+            created and implement at least the functions 
+            __len__, __getitem__, and  get_num_batches
+
+        """
+        super(MyDataset, self).__init__()
+        self.dataset_filename = dataset_filename
+
+        """ Load dataset here from dataset_filename """
+
+        self.__target_size = None
+
+    def __len__(self) -> int:
+        return self.__target_size
+
+    def __getitem__(self, index: int) -> dict:
+        """
+        Args:
+            index (int) : the index to the data point
+        Returns: a dictionary holding the data point's features
+            ('x_data' and 'y_target')
+        """
+        return None
+
+#+END_SRC
+
+The following generates batches given a batch size
+
+#+BEGIN_SRC python 
+
+from torch.utils.data import DataLoader
+
+def generate_batches(dataset: Dataset,
+                     batch_size: int, 
+                     shuffle: bool=True, 
+                     drop_last: bool=True, 
+		     device: str="cpu"):
+    """
+    Wraps DataLoader and generates batches
+    """
+
+    dataloader = DataLoader(dataset=dataset,
+                            batch_size=batch_size,
+			    shuffle=shuffle,
+			    drop_last=drop_last,
+			    )
+    for data_dict in dataloader:
+        out_data_dict = {}
+	for name, tensor in data_dict.items():
+	    out_data_dict[name] = data_dict[name].to(device)
+	    yield out_data_dict
+
+#+END_SRC
+
+** Convolutional Neural Networks
+
+#+BEGIN_SRC python
+
+from torch import nn
+import torch.nn.functional as F
+
+class CNNClassifier(nn.Module):
+    """Documentation for CNNClassifier
+
+    """
+    def __init__(self, initial_num_channels, num_classes, num_channels):
+        super(CNNClassifier, self).__init__()
+        self.initial_num_channels = initial_num_channels
+        self.num_classes = num_classes
+        self.num_channels = num_channels
+        
+        # Example CNN block
+        self.convnet = nn.Sequential(
+            nn.Conv2d(in_channels=initial_num_channels,
+                      out_channels=num_channels,
+                      kernel_size=3,
+                      stride=1,
+                      padding=0,
+                      ),
+            nn.ELU(),
+        )
+
+        self.fc = nn.Linear(num_channels, num_classes)
+
+    def forward(self, x_in, apply_softmax=False):
+        features = self.convnet(x_in).squeeze(dim=2)
+        pred_vector = self.fc(features)
+
+        if apply_softmax:
+            pred_vector = F.softmax(pred_vector, dim=1)
+
+        return pred_vector
+
+#+END_SRC
+
+** Training
+
+Make and update training state
+
+#+BEGIN_SRC python 
+
+def make_train_state(args):
+    return {'stop_early': False,
+            'early_stopping_step': 0,
+            'early_stopping_best_val': 1e8,
+            'learning_rate': args.learning_rate,
+            'epoch_index': 0,
+            'train_loss': [],
+            'train_acc': [],
+            'val_loss': [],
+            'val_acc': [],
+            'test_loss': -1,
+            'test_acc': -1,
+            'model_filename': args.model_state_file}
+
+def update_train_state(args, model, train_state):
+    """Handle the training state updates.
+
+    Components:
+     - Early Stopping: Prevent overfitting.
+     - Model Checkpoint: Model is saved if the model is better
+
+    :param args: main arguments
+    :param model: model to train
+    :param train_state: a dictionary representing the training state values
+    :returns:
+        a new train_state
+    """
+
+    # Save one model at least
+    if train_state['epoch_index'] == 0:
+        torch.save(model.state_dict(), train_state['model_filename'])
+        train_state['stop_early'] = False
+
+    # Save model if performance improved
+    elif train_state['epoch_index'] >= 1:
+        loss_tm1, loss_t = train_state['val_loss'][-2:]
+
+        # If loss worsened
+        if loss_t >= train_state['early_stopping_best_val']:
+            # Update step
+            train_state['early_stopping_step'] += 1
+        # Loss decreased
+        else:
+            # Save the best model
+            if loss_t < train_state['early_stopping_best_val']:
+                torch.save(model.state_dict(), train_state['model_filename'])
+
+            # Reset early stopping step
+            train_state['early_stopping_step'] = 0
+
+        # Stop early ?
+        train_state['stop_early'] = \
+            train_state['early_stopping_step'] >= args.early_stopping_criteria
+
+    return train_state
+
+#+END_SRC
+
+Compute accuracy
+
+#+BEGIN_SRC python 
+
+def compute_accuracy(y_pred, y_target):
+    y_pred_indices = y_pred.max(dim=1)[1]
+    n_correct = torch.eq(y_pred_indices, y_target).sum().item()
+    return n_correct / len(y_pred_indices) * 100
+
+#+END_SRC
+
+Example arguments
+
+#+BEGIN_SRC python 
+
+args = Namespace(
+    # Data and Path information
+    data_fname="data/dataset.h5",
+    model_state_file="model.pth",
+    save_dir="checkpoints",
+    # Model hyper parameters
+    hidden_dim=100,
+    num_channels=256,
+    # Training hyper parameters
+    seed=1337,
+    learning_rate=0.001,
+    batch_size=128,
+    num_epochs=100,
+    early_stopping_criteria=5,
+    dropout_p=0.1,
+    # Runtime options
+    cuda=True,
+    reload_from_files=False,
+    expand_filepaths_to_save_dir=True,
+    catch_keyboard_interrupt=True
+)
+
+if args.expand_filepaths_to_save_dir:
+    args.model_state_file = os.path.join(args.save_dir,
+                                         args.model_state_file)
+    
+    print("Expanded filepaths: ")
+    print("\t{}".format(args.model_state_file))
+    
+#+END_SRC
+
+Use cuda everywhere
+
+#+BEGIN_SRC python
+
+# Check CUDA
+if not torch.cuda.is_available():
+    args.cuda = False
+
+args.device = torch.device("cuda" if args.cuda else "cpu")
+print("Using CUDA: {}".format(args.cuda))
+
+#+END_SRC
+
+Set seed (important for reproducibility)
+
+#+BEGIN_SRC python 
+
+def set_seed_everywhere(seed, cuda):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if cuda:
+        torch.cuda.manual_seed_all(seed)
+
+# Set seed for reproducibility
+set_seed_everywhere(args.seed, args.cuda)
+
+#+END_SRC
